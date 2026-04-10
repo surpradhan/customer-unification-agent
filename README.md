@@ -10,8 +10,6 @@ This agent automatically detects and unifies duplicate customer records across m
 
 A static project page lives in `docs/index.html` and is published via GitHub Pages. It mirrors the dashboard aesthetic — KPI cards, Plotly charts, Mermaid pipeline diagram, and match statistics — using the real numbers from the latest run.
 
-To enable it: go to **Settings → Pages → Source → Deploy from branch `main`, folder `/docs`**.
-
 ## Setup
 
 ### 1. Create Virtual Environment
