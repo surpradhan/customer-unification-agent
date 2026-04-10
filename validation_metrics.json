@@ -1,0 +1,9 @@
+{
+  "overall_precision": 0.9466666666666667,
+  "overall_recall": 0.9594594594594594,
+  "auto_merge_precision": 0.9971910112359551,
+  "true_positives": 355,
+  "false_positives": 20,
+  "total_true_pairs": 370,
+  "total_predictions": 375
+}

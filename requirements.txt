@@ -1,0 +1,15 @@
+# Data manipulation
+pandas==2.1.4
+numpy==1.26.2
+
+# Synthetic data generation
+faker==22.0.0
+
+# Record linkage
+splink>=4.0,<5
+
+# UI for review dashboard
+streamlit==1.29.0
+
+# Utilities
+python-dotenv==1.0.0

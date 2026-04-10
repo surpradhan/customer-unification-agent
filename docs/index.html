@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Customer Unification Agent</title>
+
+  <!-- Plotly & Mermaid -->
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <style>
+    /* ── Design tokens (mirrors Streamlit dark theme) ── */
+    :root {
+      --navy:      #4f8bc4;   /* accent blue — brighter on dark bg */
+      --blue-mid:  #6ba3d6;
+      --blue-light:#90bce8;
+      --blue-pale: #1a3a5c;
+      --bg:        #0e1117;   /* Streamlit dark background */
+      --surface:   #1e2130;   /* Streamlit dark card / secondary bg */
+      --border:    #2d3347;
+      --text:      #fafafa;
+      --muted:     #8b95a8;
+      --green:     #21c55d;
+      --green-bg:  #0d2b1a;
+      --teal:      #22c5c5;
+      --teal-bg:   #0d2626;
+      --delta-neg: #21c55d;   /* green — "inverse" delta like Streamlit */
+      --radius:    10px;
+      --shadow:    0 2px 12px rgba(0,0,0,.4);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Source Sans Pro", "Segoe UI", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+
+    /* ── Top bar ── */
+    header {
+      background: var(--navy);
+      color: #fff;
+      padding: 2.5rem 2rem 2rem;
+      text-align: center;
+    }
+    header h1 { font-size: 2rem; font-weight: 700; letter-spacing: -.5px; }
+    header p  { margin-top: .5rem; font-size: 1.05rem; opacity: .85; }
+
+    /* ── Main wrapper ── */
+    main { max-width: 1100px; margin: 0 auto; padding: 2rem 1.5rem 4rem; }
+
+    /* ── Section headers ── */
+    .section-title {
+      font-size: 1.2rem;
+      font-weight: 700;
+      color: var(--navy);
+      margin-bottom: 1rem;
+      padding-bottom: .4rem;
+      border-bottom: 2px solid var(--blue-pale);
+    }
+    section { margin-top: 2.5rem; }
+
+    /* ── Divider ── */
+    hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+
+    /* ── KPI cards ── */
+    .kpi-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+    }
+    @media (max-width: 700px) {
+      .kpi-grid { grid-template-columns: repeat(2, 1fr); }
+      .kpi-grid .kpi:nth-child(n+3) { margin-top: 0; }
+    }
+    .kpi {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.2rem 1.4rem;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }
+    .kpi::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 3px;
+      background: linear-gradient(90deg, var(--navy), var(--blue-mid));
+    }
+    .kpi-label  { font-size: .78rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .kpi-value  { font-size: 2rem; font-weight: 700; color: var(--navy); line-height: 1.1; margin-top: .3rem; }
+    .kpi-delta  { font-size: .8rem; margin-top: .35rem; color: var(--delta-neg); font-weight: 600; }
+    .kpi-delta.neutral { color: var(--muted); }
+
+    /* ── Two-column layouts ── */
+    .two-col { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; align-items: start; }
+    @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Value unlock card ── */
+    .value-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      box-shadow: var(--shadow);
+    }
+    .value-card .big-number {
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: var(--navy);
+    }
+    .value-card p { color: var(--muted); margin-top: .6rem; font-size: .95rem; }
+    .value-card strong { color: var(--text); }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+    thead th {
+      background: var(--navy);
+      color: #fff;
+      text-align: left;
+      padding: .7rem 1rem;
+      font-weight: 600;
+      font-size: .78rem;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    tbody tr:nth-child(even) { background: var(--bg); }
+    tbody td { padding: .65rem 1rem; border-bottom: 1px solid var(--border); color: var(--text); }
+    tbody tr:last-child td { border-bottom: none; }
+    .conf-badge {
+      display: inline-block;
+      background: var(--blue-pale);
+      color: var(--navy);
+      border-radius: 12px;
+      padding: .1rem .55rem;
+      font-weight: 700;
+      font-size: .8rem;
+    }
+    .table-note { font-size: .83rem; color: var(--muted); margin-top: .8rem; }
+
+    /* ── Plotly chart containers ── */
+    .chart-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: .5rem;
+    }
+
+    /* ── Stat list (match quality sidebar) ── */
+    .stat-list { list-style: none; }
+    .stat-list li {
+      padding: .5rem 0;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      font-size: .9rem;
+    }
+    .stat-list li:last-child { border-bottom: none; }
+    .stat-list .stat-val { font-weight: 700; color: var(--navy); }
+
+    /* ── Insight cards ── */
+    .insights-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    @media (max-width: 700px) { .insights-grid { grid-template-columns: 1fr; } }
+
+    .insight-card {
+      border-radius: var(--radius);
+      padding: 1.2rem 1.4rem;
+      font-size: .92rem;
+      line-height: 1.55;
+    }
+    .insight-card.green { background: var(--green-bg); border-left: 4px solid var(--green); }
+    .insight-card.teal  { background: var(--teal-bg);  border-left: 4px solid var(--teal); }
+    .insight-card strong { display: block; margin-bottom: .4rem; font-size: 1rem; }
+    .insight-card.green strong { color: var(--green); }
+    .insight-card.teal  strong { color: var(--teal);  }
+
+    /* ── Pipeline diagram ── */
+    .mermaid-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.5rem;
+      box-shadow: var(--shadow);
+      overflow-x: auto;
+      text-align: center;
+    }
+    .mermaid { display: inline-block; }
+
+    /* ── Footer ── */
+    footer {
+      text-align: center;
+      font-size: .8rem;
+      color: var(--muted);
+      padding: 2rem 1rem;
+      border-top: 1px solid var(--border);
+      margin-top: 3rem;
+    }
+    footer a { color: var(--blue-mid); text-decoration: none; }
+    footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Customer Unification Agent</h1>
+  <p>Discover the hidden value in your customer data across Shopify &amp; Stripe</p>
+</header>
+
+<main>
+
+  <!-- ── KPI Cards ── -->
+  <section>
+    <div class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Total Customer Records</div>
+        <div class="kpi-value">850</div>
+        <div class="kpi-delta neutral">Shopify 425 · Stripe 425</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Duplicates Found</div>
+        <div class="kpi-value">356</div>
+        <div class="kpi-delta">&#8595; &minus;41.9% reduction</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Unique Customers</div>
+        <div class="kpi-value">500</div>
+        <div class="kpi-delta neutral">494 after deduplication</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Match Precision</div>
+        <div class="kpi-value">99.7%</div>
+        <div class="kpi-delta neutral">Auto-merge tier · 94.7% overall</div>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── Hidden Value ── -->
+  <section>
+    <div class="section-title">Hidden Value Unlocked</div>
+    <div class="two-col">
+      <div class="value-card">
+        <div class="kpi-label">Combined Customer Lifetime Value</div>
+        <div class="big-number">$381,200</div>
+        <p>
+          <strong>Before unification:</strong> 356 customers appeared as separate
+          individuals with fragmented purchase histories across two platforms.
+        </p>
+        <p style="margin-top:.6rem">
+          <strong>After unification:</strong> You now see each customer's complete
+          relationship — total spend, subscription status, and cross-channel
+          behavior — in one place.
+        </p>
+      </div>
+      <div class="value-card" style="text-align:center;">
+        <div class="kpi-label">Avg Value Per Unified Customer</div>
+        <div class="big-number" style="margin-top:.5rem">$1,071</div>
+        <p style="margin-top:.5rem; font-size:.85rem;">
+          Previously invisible across silos
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── Top customers ── -->
+  <section>
+    <div class="section-title">Top Cross-Platform Customers</div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Email</th>
+            <th>Shopify Spent</th>
+            <th>Stripe Value</th>
+            <th>Total Value</th>
+            <th>Confidence</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>Amanda Rodriguez</td><td>arodriguez@example.com</td><td>$2,840.50</td><td>$1,920.00</td><td>$4,760.50</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Michael Chen</td><td>mchen@example.net</td><td>$2,614.80</td><td>$1,750.00</td><td>$4,364.80</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Sarah Thompson</td><td>s.thompson@example.org</td><td>$1,990.20</td><td>$2,100.00</td><td>$4,090.20</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>David Kim</td><td>dkim22@example.com</td><td>$2,310.00</td><td>$1,620.00</td><td>$3,930.00</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Jennifer Walsh</td><td>jwalsh@example.net</td><td>$1,745.60</td><td>$2,050.00</td><td>$3,795.60</td><td><span class="conf-badge">99.9%</span></td></tr>
+          <tr><td>Carlos Reyes</td><td>creyes@example.com</td><td>$2,180.90</td><td>$1,480.00</td><td>$3,660.90</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Emily Foster</td><td>emily.foster@example.org</td><td>$1,520.30</td><td>$2,000.00</td><td>$3,520.30</td><td><span class="conf-badge">99.9%</span></td></tr>
+          <tr><td>James Nakamura</td><td>jnakamura@example.net</td><td>$1,980.00</td><td>$1,490.00</td><td>$3,470.00</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Lisa Patel</td><td>lpatel@example.com</td><td>$1,655.40</td><td>$1,750.00</td><td>$3,405.40</td><td><span class="conf-badge">100.0%</span></td></tr>
+          <tr><td>Robert Okafor</td><td>rokafor@example.net</td><td>$2,050.10</td><td>$1,300.00</td><td>$3,350.10</td><td><span class="conf-badge">99.9%</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="table-note">
+      <strong>Insight:</strong> These are your most valuable cross-platform customers — they trust
+      you across multiple channels. Prioritise retention and exclusive offers for this cohort.
+    </p>
+  </section>
+
+  <hr />
+
+  <!-- ── Value Distribution chart ── -->
+  <section>
+    <div class="section-title">Customer Value Distribution</div>
+    <div class="chart-box">
+      <div id="chart-value-dist" style="height:380px;"></div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── Insights ── -->
+  <section>
+    <div class="section-title">Actionable Insights</div>
+    <div class="insights-grid">
+      <div class="insight-card green">
+        <strong>Retargeting Opportunity</strong>
+        68 customers have spent over $2,000 across both platforms. These are your
+        VIPs — create a loyalty programme or exclusive offers to keep them engaged.
+      </div>
+      <div class="insight-card teal">
+        <strong>Cross-Sell Campaign</strong>
+        214 customers have active Stripe subscriptions <em>and</em> make Shopify purchases.
+        They are highly engaged — a targeted upsell campaign has a ready audience.
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── Match Quality ── -->
+  <section>
+    <div class="section-title">Match Quality</div>
+    <div class="two-col">
+      <div class="chart-box">
+        <div id="chart-match-conf" style="height:300px;"></div>
+      </div>
+      <div class="value-card">
+        <div class="kpi-label" style="margin-bottom:.8rem">Match Statistics</div>
+        <ul class="stat-list">
+          <li><span>Average confidence</span><span class="stat-val">99.8%</span></li>
+          <li><span>Median confidence</span><span class="stat-val">100.0%</span></li>
+          <li><span>Auto-merge pairs</span><span class="stat-val">356</span></li>
+          <li><span>Review-queue pairs</span><span class="stat-val">19</span></li>
+          <li><span>Auto-merge precision</span><span class="stat-val">99.7%</span></li>
+          <li><span>Overall recall</span><span class="stat-val">95.9%</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── Pipeline Diagram ── -->
+  <section>
+    <div class="section-title">How It Works</div>
+    <div class="mermaid-wrap">
+      <pre class="mermaid">
+flowchart TD
+    A[Shopify Customers] --> C[Blocking]
+    B[Stripe Customers] --> C
+    C -->|"Fast rules: email, phone, zipcode"| D[Candidate Pairs]
+    D --> E[Comparison]
+    E -->|"Email · Name · Phone · Address · Zipcode"| F[Splink Training]
+    F -->|"EM algorithm → m/u probabilities"| G[Prediction]
+    G --> H{Match Probability}
+    H -->|"≥ 0.95"| I[Auto-Merge]
+    H -->|"0.75 – 0.95"| J[Human Review Queue]
+    H -->|"< 0.75"| K[Discarded]
+    I --> L[Unified Customer Record]
+    J --> M[Analyst Decision] --> L
+    L --> N[ROI Dashboard]
+      </pre>
+    </div>
+  </section>
+
+  <hr />
+
+  <!-- ── About ── -->
+  <section>
+    <div class="section-title">About This Analysis</div>
+    <div class="value-card" style="font-size:.92rem; color:var(--muted); line-height:1.8;">
+      <ul style="padding-left:1.2rem;">
+        <li>Matching algorithm: Probabilistic record linkage via <strong style="color:var(--text)">Splink 4.0.16</strong> (<code>link_type="link_only"</code>)</li>
+        <li>Blocking rules: exact email, 6-char email prefix, exact phone, exact zipcode</li>
+        <li>Comparison signals: Levenshtein on email/phone/address, Jaro-Winkler on name, exact zipcode</li>
+        <li>Auto-merge threshold: <strong style="color:var(--text)">≥ 95%</strong> confidence — 0 false positives on the baseline dataset</li>
+        <li>Review-queue threshold: <strong style="color:var(--text)">75–95%</strong> confidence — flagged for human review</li>
+        <li>Hard-case stress test: 20 intentionally tricky pairs (name/address changes, email domain swaps) — 95.9% recall</li>
+      </ul>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Built with <a href="https://github.com/moj-analytical-services/splink">Splink</a> ·
+  <a href="https://github.com">View on GitHub</a>
+</footer>
+
+<script>
+  /* ── Mermaid init ── */
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      primaryColor:       "#d6eaf8",
+      primaryTextColor:   "#1a2736",
+      primaryBorderColor: "#37536d",
+      lineColor:          "#37536d",
+      secondaryColor:     "#eafaf1",
+      tertiaryColor:      "#f0f4f8",
+      fontFamily:         "'Source Sans Pro', 'Segoe UI', system-ui, sans-serif",
+    },
+  });
+
+  /* ── Blues colour ramp (mirrors Plotly Blues scale) ── */
+  const blues = [
+    "#c6dbef", "#9ecae1", "#6baed6", "#4292c6",
+    "#2171b5", "#084594"
+  ];
+
+  /* ── Value Distribution bar chart ── */
+  const valueBins   = ["$0–500", "$500–1k", "$1k–1.5k", "$1.5k–2k", "$2k–2.5k", "$2.5k+"];
+  const valueCounts = [42, 87, 95, 78, 68, 30];
+
+  const DARK_BG   = "#1e2130";
+  const DARK_FONT = "#fafafa";
+  const DARK_GRID = "#2d3347";
+  const FONT_FAM  = "'Source Sans Pro', 'Segoe UI', system-ui, sans-serif";
+
+  Plotly.newPlot("chart-value-dist", [{
+    type: "bar",
+    x: valueBins,
+    y: valueCounts,
+    marker: {
+      color: valueCounts,
+      colorscale: [
+        [0,   "#1a3a5c"],
+        [0.2, "#2171b5"],
+        [0.5, "#4292c6"],
+        [0.8, "#6baed6"],
+        [1,   "#9ecae1"],
+      ],
+      showscale: false,
+    },
+    hovertemplate: "<b>%{x}</b><br>Customers: %{y}<extra></extra>",
+  }], {
+    title: { text: "Distribution of Unified Customer Values", font: { color: DARK_FONT } },
+    xaxis: { title: "Customer Lifetime Value Range", gridcolor: DARK_GRID, color: DARK_FONT, tickfont: { color: DARK_FONT } },
+    yaxis: { title: "Number of Customers",           gridcolor: DARK_GRID, color: DARK_FONT, tickfont: { color: DARK_FONT } },
+    paper_bgcolor: DARK_BG,
+    plot_bgcolor:  DARK_BG,
+    margin: { t: 50, r: 20, b: 60, l: 55 },
+    font: { family: FONT_FAM, color: DARK_FONT },
+  }, { responsive: true, displayModeBar: false });
+
+  /* ── Match Confidence histogram ── */
+  const confBins  = ["0.75–0.80","0.80–0.85","0.85–0.90","0.90–0.95","0.95–0.975","0.975–0.99","0.99–1.0"];
+  const confCount = [5, 4, 5, 5, 12, 18, 326];
+
+  Plotly.newPlot("chart-match-conf", [{
+    type: "bar",
+    x: confBins,
+    y: confCount,
+    marker: { color: "#4f8bc4" },
+    hovertemplate: "<b>%{x}</b><br>Pairs: %{y}<extra></extra>",
+  }], {
+    title: { text: "Distribution of Match Confidence Scores", font: { color: DARK_FONT } },
+    xaxis: { title: "Match Probability", gridcolor: DARK_GRID, color: DARK_FONT, tickfont: { color: DARK_FONT } },
+    yaxis: { title: "Number of Matches",  gridcolor: DARK_GRID, color: DARK_FONT, tickfont: { color: DARK_FONT } },
+    paper_bgcolor: DARK_BG,
+    plot_bgcolor:  DARK_BG,
+    margin: { t: 50, r: 20, b: 60, l: 55 },
+    font: { family: FONT_FAM, color: DARK_FONT },
+  }, { responsive: true, displayModeBar: false });
+</script>
+</body>
+</html>
