@@ -20,7 +20,7 @@ from config import (
     VALUE_BIN_LABELS,
 )
 from data import load_dashboard_data, load_matches
-from metrics import calculate_summary_metrics, top_customers, vip_count
+from metrics import calculate_summary_metrics, vip_count
 
 DASHBOARD_STATE_JSON = "dashboard_state.json"
 
@@ -60,8 +60,8 @@ def _save_metrics(metrics: dict) -> None:
     try:
         with open(DASHBOARD_STATE_JSON, "w") as f:
             json.dump(state, f)
-    except Exception:
-        pass
+    except OSError as e:
+        logger.warning("Could not save dashboard state: %s", e)
 
 
 def _load_all_matches() -> pd.DataFrame:
@@ -120,7 +120,7 @@ def render_sidebar(all_matches_df: pd.DataFrame) -> tuple[float, str]:
             "Confidence Threshold",
             min_value=min_conf,
             max_value=1.0,
-            value=AUTO_MERGE_THRESHOLD,
+            value=max(min_conf, AUTO_MERGE_THRESHOLD),
             step=0.01,
             format="%.2f",
             help="Show only matches at or above this confidence level",
@@ -249,10 +249,7 @@ def create_top_customers_table(cross_platform_df: pd.DataFrame) -> None:
     st.markdown('<a id="top-customers"></a>', unsafe_allow_html=True)
     st.header("Top Cross-Platform Customers")
 
-    all_customers = cross_platform_df.copy()
-    all_customers["name"] = _normalize_names(all_customers["name"])
-    all_customers["match_confidence"] = all_customers["match_confidence"] * 100
-    all_customers = all_customers.sort_values("total_value", ascending=False)
+    all_customers = cross_platform_df.sort_values("total_value", ascending=False).copy()
 
     search = st.text_input(
         "Search by name or email",
@@ -352,16 +349,16 @@ def create_distribution_chart(cross_platform_df: pd.DataFrame) -> None:
         options,
         horizontal=True,
         label_visibility="visible",
+        key="distribution_bin_selector",
     )
 
     if selected_option != "(none)":
         # Extract just the label part before the " (" count
         selected_bin = selected_option.split(" (")[0]
         if selected_bin in binned["value_range"].cat.categories.tolist():
-            bin_customers = binned[binned["value_range"] == selected_bin].copy()
-            bin_customers["name"] = _normalize_names(bin_customers["name"])
-            bin_customers["match_confidence"] = bin_customers["match_confidence"] * 100
-            bin_customers = bin_customers.sort_values("total_value", ascending=False)
+            bin_customers = binned[binned["value_range"] == selected_bin].sort_values(
+                "total_value", ascending=False
+            ).copy()
 
             st.markdown(f"**{len(bin_customers)} customers in the {selected_bin} range:**")
 
@@ -487,12 +484,14 @@ def main() -> None:
     metrics = calculate_summary_metrics(shopify_df, stripe_df, matches_df, precision=precision)
     prev_metrics = _load_prev_metrics()
 
-    # Apply platform filter to cross-platform customers
+    # Apply platform filter and normalise display fields once, before passing to renderers
     cp = metrics["cross_platform_customers"].copy()
     if platform == "Shopify Primary":
         cp = cp[cp["shopify_spent"] >= cp["stripe_value"]]
     elif platform == "Stripe Primary":
         cp = cp[cp["stripe_value"] > cp["shopify_spent"]]
+    cp["name"] = _normalize_names(cp["name"])
+    cp["match_confidence"] = cp["match_confidence"] * 100
     metrics["cross_platform_customers"] = cp
 
     # Persist baseline metrics (only at the default threshold to keep a stable baseline)
