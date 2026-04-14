@@ -5,18 +5,31 @@ Shows the business value of merging duplicate customer records
 
 import json
 import logging
+import re
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from config import VALUE_BINS, VALUE_BIN_LABELS, VALIDATION_METRICS_JSON
-from data import load_dashboard_data
+from config import (
+    AUTO_MERGE_THRESHOLD,
+    REVIEW_QUEUE_CSV,
+    VALIDATION_METRICS_JSON,
+    VALUE_BINS,
+    VALUE_BIN_LABELS,
+)
+from data import load_dashboard_data, load_matches
 from metrics import calculate_summary_metrics, top_customers, vip_count
+
+DASHBOARD_STATE_JSON = "dashboard_state.json"
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 def _load_precision() -> float | None:
     """Load precision from validation_metrics.json if it exists."""
@@ -28,17 +41,126 @@ def _load_precision() -> float | None:
         return None
 
 
-def create_summary_cards(metrics: dict) -> None:
-    """Display hero metrics at the top of the dashboard."""
+def _load_prev_metrics() -> dict | None:
+    """Load metrics saved from the previous default-threshold run."""
+    try:
+        with open(DASHBOARD_STATE_JSON) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return None
+
+
+def _save_metrics(metrics: dict) -> None:
+    """Persist key metrics so the next run can show deltas."""
+    state = {
+        k: metrics[k]
+        for k in ("total_records", "duplicates_found", "unique_customers", "hidden_value", "precision")
+        if k in metrics
+    }
+    try:
+        with open(DASHBOARD_STATE_JSON, "w") as f:
+            json.dump(state, f)
+    except Exception:
+        pass
+
+
+def _load_all_matches() -> pd.DataFrame:
+    """Return auto-merge + review-queue matches combined (review-queue is optional)."""
+    auto_df = load_matches()
+    try:
+        review_df = load_matches(REVIEW_QUEUE_CSV)
+        combined = pd.concat([auto_df, review_df], ignore_index=True)
+        return combined.drop_duplicates(subset=["unique_id_l", "unique_id_r"])
+    except FileNotFoundError:
+        return auto_df
+
+
+def _normalize_names(series: pd.Series) -> pd.Series:
+    """Insert spaces in CamelCase names (e.g. 'AnitaHunt' → 'Anita Hunt')."""
+    return series.str.replace(r"(?<=[a-z])(?=[A-Z])", " ", regex=True)
+
+
+def _drill_down_col_config() -> dict:
+    return {
+        "Shopify Spent": st.column_config.NumberColumn(format="$%.2f"),
+        "Stripe Value": st.column_config.NumberColumn(format="$%.2f"),
+        "Total Value": st.column_config.NumberColumn(format="$%.2f"),
+        "Confidence": st.column_config.NumberColumn(format="%.1f%%"),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
+def render_sidebar(all_matches_df: pd.DataFrame) -> tuple[float, str]:
+    """Render sidebar navigation, confidence slider, and platform filter.
+
+    Returns (threshold, platform_filter).
+    """
+    with st.sidebar:
+        st.markdown("## Navigation")
+        st.markdown(
+            """
+<a href="#summary-metrics">📊 &nbsp;Summary Metrics</a><br>
+<a href="#hidden-value">💰 &nbsp;Hidden Value</a><br>
+<a href="#top-customers">🏆 &nbsp;Top Customers</a><br>
+<a href="#value-distribution">📈 &nbsp;Value Distribution</a><br>
+<a href="#actionable-insights">💡 &nbsp;Actionable Insights</a><br>
+<a href="#match-quality">🎯 &nbsp;Match Quality</a>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        st.divider()
+        st.markdown("## Filters")
+
+        min_conf = round(float(all_matches_df["match_probability"].min()), 2)
+        threshold = st.slider(
+            "Confidence Threshold",
+            min_value=min_conf,
+            max_value=1.0,
+            value=AUTO_MERGE_THRESHOLD,
+            step=0.01,
+            format="%.2f",
+            help="Show only matches at or above this confidence level",
+        )
+
+        platform = st.selectbox(
+            "Customer Type",
+            ["All", "Shopify Primary", "Stripe Primary"],
+            help="Filter by which platform drives more of the customer's spend",
+        )
+
+        st.caption(f"Showing matches ≥ {threshold:.0%} confidence")
+
+    return threshold, platform
+
+
+# ---------------------------------------------------------------------------
+# Section renderers
+# ---------------------------------------------------------------------------
+
+def create_summary_cards(metrics: dict, prev: dict | None) -> None:
+    """Display hero metrics with optional vs-last-run deltas."""
+    st.markdown('<a id="summary-metrics"></a>', unsafe_allow_html=True)
+
+    def _delta(key: str, fmt=lambda v: f"{v:+,}") -> str | None:
+        if prev and prev.get(key) is not None:
+            diff = metrics[key] - prev[key]
+            if diff != 0:
+                return fmt(diff)
+        return None
+
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
             "Total Customer Records",
             f"{metrics['total_records']:,}",
+            delta=_delta("total_records"),
             help="Combined records across Shopify and Stripe",
         )
-
     with col2:
         reduction = metrics["duplicates_found"] / metrics["total_records"] * 100
         st.metric(
@@ -48,14 +170,13 @@ def create_summary_cards(metrics: dict) -> None:
             delta_color="inverse",
             help="Number of duplicate customer records identified",
         )
-
     with col3:
         st.metric(
             "Unique Customers",
             f"{metrics['unique_customers']:,}",
+            delta=_delta("unique_customers"),
             help="Actual number of unique customers after deduplication",
         )
-
     with col4:
         precision = metrics["precision"]
         precision_label = f"{precision:.1%}" if precision is not None else "N/A"
@@ -66,19 +187,26 @@ def create_summary_cards(metrics: dict) -> None:
         )
 
 
-def create_value_unlock_section(metrics: dict) -> None:
-    """Show the hidden value unlocked."""
+def create_value_unlock_section(metrics: dict, prev: dict | None) -> None:
+    """Show hidden CLV with vs-last-run delta and Shopify/Stripe revenue split."""
+    st.markdown('<a id="hidden-value"></a>', unsafe_allow_html=True)
     st.header("Hidden Value Unlocked")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
+        hidden_delta = None
+        if prev and prev.get("hidden_value") is not None:
+            diff = metrics["hidden_value"] - prev["hidden_value"]
+            if diff != 0:
+                hidden_delta = f"${diff:+,.2f} vs last run"
+
         st.metric(
             "Combined Customer Lifetime Value",
             f"${metrics['hidden_value']:,.2f}",
+            delta=hidden_delta,
             help="Total spending across both platforms that was previously invisible",
         )
-
         st.markdown(
             f"""
             **Before unification:** You saw these {metrics['duplicates_found']} customers as
@@ -94,23 +222,94 @@ def create_value_unlock_section(metrics: dict) -> None:
         avg_value = metrics["hidden_value"] / n if n > 0 else 0
         st.metric("Avg Value Per Unified Customer", f"${avg_value:,.2f}")
 
+        cp = metrics["cross_platform_customers"]
+        if not cp.empty:
+            shopify_total = float(cp["shopify_spent"].sum())
+            stripe_total = float(cp["stripe_value"].sum())
+            fig = go.Figure(data=[
+                go.Bar(name="Shopify", x=["Revenue"], y=[shopify_total], marker_color="#5b9bd5"),
+                go.Bar(name="Stripe", x=["Revenue"], y=[stripe_total], marker_color="#7b68ee"),
+            ])
+            fig.update_layout(
+                barmode="stack",
+                height=220,
+                margin=dict(l=0, r=0, t=40, b=0),
+                title_text="Platform Revenue Split",
+                title_font_size=13,
+                showlegend=True,
+                legend=dict(orientation="h", y=1.18, x=0),
+                yaxis_tickprefix="$",
+                yaxis_tickformat=",.0f",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
 
 def create_top_customers_table(cross_platform_df: pd.DataFrame) -> None:
-    """Show top cross-platform customers."""
+    """Top customers table with search, show-all expander, and CSV download."""
+    st.markdown('<a id="top-customers"></a>', unsafe_allow_html=True)
     st.header("Top Cross-Platform Customers")
 
-    display_df = top_customers(cross_platform_df, n=10)[
-        ["name", "email", "shopify_spent", "stripe_value", "total_value", "match_confidence"]
-    ].copy()
+    all_customers = cross_platform_df.copy()
+    all_customers["name"] = _normalize_names(all_customers["name"])
+    all_customers["match_confidence"] = all_customers["match_confidence"] * 100
+    all_customers = all_customers.sort_values("total_value", ascending=False)
 
-    display_df["shopify_spent"] = display_df["shopify_spent"].map("${:,.2f}".format)
-    display_df["stripe_value"] = display_df["stripe_value"].map("${:,.2f}".format)
-    display_df["total_value"] = display_df["total_value"].map("${:,.2f}".format)
-    display_df["match_confidence"] = display_df["match_confidence"].map("{:.1%}".format)
+    search = st.text_input(
+        "Search by name or email",
+        placeholder="e.g. Jenny or @example.com",
+        label_visibility="collapsed",
+    )
 
-    display_df.columns = ["Name", "Email", "Shopify Spent", "Stripe Value", "Total Value", "Confidence"]
+    display_cols = ["name", "email", "shopify_spent", "stripe_value", "total_value", "match_confidence"]
+    col_labels = ["Name", "Email", "Shopify Spent", "Stripe Value", "Total Value", "Confidence"]
 
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    if search:
+        mask = (
+            all_customers["name"].str.contains(search, case=False, na=False)
+            | all_customers["email"].str.contains(search, case=False, na=False)
+        )
+        display_df = all_customers[mask][display_cols].copy()
+        display_df.columns = col_labels
+    else:
+        display_df = all_customers.head(10)[display_cols].copy()
+        display_df.columns = col_labels
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=_drill_down_col_config(),
+    )
+
+    btn_col, exp_col = st.columns([1, 3])
+    with btn_col:
+        csv = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Download CSV",
+            data=csv,
+            file_name="top_cross_platform_customers.csv",
+            mime="text/csv",
+        )
+
+    if not search:
+        with exp_col:
+            with st.expander(f"Show all {len(all_customers)} matched customers"):
+                all_display = all_customers[display_cols].copy()
+                all_display.columns = col_labels
+                st.dataframe(
+                    all_display,
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config=_drill_down_col_config(),
+                )
+                full_csv = all_display.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇️ Download all customers",
+                    data=full_csv,
+                    file_name="all_cross_platform_customers.csv",
+                    mime="text/csv",
+                    key="dl_all",
+                )
 
     st.markdown(
         "**Insight:** These are your most valuable cross-platform customers. "
@@ -119,7 +318,8 @@ def create_top_customers_table(cross_platform_df: pd.DataFrame) -> None:
 
 
 def create_distribution_chart(cross_platform_df: pd.DataFrame) -> None:
-    """Create value distribution visualization."""
+    """Bar chart of customer value distribution with drill-down by range selector."""
+    st.markdown('<a id="value-distribution"></a>', unsafe_allow_html=True)
     st.header("Customer Value Distribution")
 
     binned = cross_platform_df.copy()
@@ -129,7 +329,6 @@ def create_distribution_chart(cross_platform_df: pd.DataFrame) -> None:
         labels=VALUE_BIN_LABELS,
         include_lowest=True,
     )
-
     value_counts = binned["value_range"].value_counts().sort_index()
 
     fig = px.bar(
@@ -140,47 +339,98 @@ def create_distribution_chart(cross_platform_df: pd.DataFrame) -> None:
         color=value_counts.values,
         color_continuous_scale="Blues",
     )
-    fig.update_layout(showlegend=False, height=400)
-
+    fig.update_layout(showlegend=False, height=400, coloraxis_showscale=False)
     st.plotly_chart(fig, use_container_width=True)
+
+    # Drill-down via radio selector
+    bin_labels = value_counts.index.tolist()
+    bin_counts = {label: int(value_counts[label]) for label in bin_labels}
+    options = ["(none)"] + [f"{lbl} ({bin_counts[lbl]} customers)" for lbl in bin_labels]
+
+    selected_option = st.radio(
+        "Explore a range:",
+        options,
+        horizontal=True,
+        label_visibility="visible",
+    )
+
+    if selected_option != "(none)":
+        # Extract just the label part before the " (" count
+        selected_bin = selected_option.split(" (")[0]
+        if selected_bin in binned["value_range"].cat.categories.tolist():
+            bin_customers = binned[binned["value_range"] == selected_bin].copy()
+            bin_customers["name"] = _normalize_names(bin_customers["name"])
+            bin_customers["match_confidence"] = bin_customers["match_confidence"] * 100
+            bin_customers = bin_customers.sort_values("total_value", ascending=False)
+
+            st.markdown(f"**{len(bin_customers)} customers in the {selected_bin} range:**")
+
+            display_cols = ["name", "email", "shopify_spent", "stripe_value", "total_value", "match_confidence"]
+            drill_df = bin_customers[display_cols].copy()
+            drill_df.columns = ["Name", "Email", "Shopify Spent", "Stripe Value", "Total Value", "Confidence"]
+
+            st.dataframe(
+                drill_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config=_drill_down_col_config(),
+            )
+            safe_key = re.sub(r"[^a-zA-Z0-9]", "_", selected_bin)
+            csv = drill_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                f"⬇️ Download {selected_bin} customers",
+                data=csv,
+                file_name=f"customers_{safe_key}.csv",
+                mime="text/csv",
+                key=f"dl_bin_{safe_key}",
+            )
 
 
 def create_insights_section(cross_platform_df: pd.DataFrame) -> None:
-    """Generate actionable business insights."""
+    """Actionable business insights cards."""
+    st.markdown('<a id="actionable-insights"></a>', unsafe_allow_html=True)
     st.header("Actionable Insights")
 
     num_vip = vip_count(cross_platform_df)
-    num_active_subs = int((cross_platform_df["stripe_value"] > 0).sum())
+    num_with_stripe = int((cross_platform_df["stripe_value"] > 0).sum())
 
     col1, col2 = st.columns(2)
-
     with col1:
         st.success(
             f"**Retargeting Opportunity**\n\n"
             f"{num_vip} customers have spent over $2,000 across both platforms. "
             f"These are your VIPs — create a loyalty program or exclusive offers for them."
         )
-
     with col2:
         st.info(
             f"**Cross-Sell Campaign**\n\n"
-            f"{num_active_subs} customers have active Stripe subscriptions AND make Shopify "
-            f"purchases. They're highly engaged — what else can you sell them?"
+            f"{num_with_stripe} customers have Stripe charges AND make Shopify purchases. "
+            f"They're highly engaged — what else can you sell them?"
         )
 
 
-def create_match_quality_section(matches_df: pd.DataFrame) -> None:
-    """Show match quality distribution."""
+def create_match_quality_section(matches_df: pd.DataFrame, threshold: float) -> None:
+    """Match quality histogram with threshold annotation."""
+    st.markdown('<a id="match-quality"></a>', unsafe_allow_html=True)
     st.header("Match Quality")
 
     col1, col2 = st.columns([2, 1])
 
     with col1:
+        min_prob = float(matches_df["match_probability"].min())
         fig = go.Figure(data=[go.Histogram(
             x=matches_df["match_probability"],
-            nbinsx=20,
+            xbins=dict(start=min_prob - 0.005, end=1.001, size=0.005),
             marker_color="rgb(55, 83, 109)",
         )])
+        fig.add_vline(
+            x=threshold,
+            line_dash="dash",
+            line_color="rgba(255, 165, 0, 0.85)",
+            annotation_text=f"Threshold ({threshold:.0%})",
+            annotation_position="top left",
+            annotation_font_color="rgba(255, 165, 0, 0.95)",
+        )
         fig.update_layout(
             title="Distribution of Match Confidence Scores",
             xaxis_title="Match Probability",
@@ -201,35 +451,61 @@ def create_match_quality_section(matches_df: pd.DataFrame) -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main() -> None:
     st.set_page_config(
         page_title="Customer Unification Dashboard",
-        page_icon="",
+        page_icon="📊",
         layout="wide",
     )
 
     st.title("Customer Unification Dashboard")
     st.markdown("### Discover the hidden value in your customer data")
 
-    try:
-        shopify_df, stripe_df, matches_df, _ = load_dashboard_data()
-    except FileNotFoundError as e:
-        st.error(f"Data files not found. Please run the matching engine first. Error: {e}")
-        return
-    except ValueError as e:
-        st.error(f"Data validation error: {e}")
-        return
+    with st.spinner("Loading customer data…"):
+        try:
+            shopify_df, stripe_df, _, _ = load_dashboard_data()
+            all_matches_df = _load_all_matches()
+        except FileNotFoundError as e:
+            st.error(f"Data files not found. Please run the matching engine first. Error: {e}")
+            return
+        except ValueError as e:
+            st.error(f"Data validation error: {e}")
+            return
 
+    # Sidebar: navigation + filters
+    threshold, platform = render_sidebar(all_matches_df)
+
+    # Filter matches by threshold
+    matches_df = all_matches_df[all_matches_df["match_probability"] >= threshold].copy()
+
+    # Calculate metrics
     precision = _load_precision()
     metrics = calculate_summary_metrics(shopify_df, stripe_df, matches_df, precision=precision)
+    prev_metrics = _load_prev_metrics()
 
-    create_summary_cards(metrics)
+    # Apply platform filter to cross-platform customers
+    cp = metrics["cross_platform_customers"].copy()
+    if platform == "Shopify Primary":
+        cp = cp[cp["shopify_spent"] >= cp["stripe_value"]]
+    elif platform == "Stripe Primary":
+        cp = cp[cp["stripe_value"] > cp["shopify_spent"]]
+    metrics["cross_platform_customers"] = cp
+
+    # Persist baseline metrics (only at the default threshold to keep a stable baseline)
+    if abs(threshold - AUTO_MERGE_THRESHOLD) < 0.001:
+        _save_metrics(metrics)
+
+    # Render all sections
+    create_summary_cards(metrics, prev_metrics)
     st.divider()
 
-    create_value_unlock_section(metrics)
+    create_value_unlock_section(metrics, prev_metrics)
     st.divider()
 
-    cp = metrics["cross_platform_customers"]
     if not cp.empty:
         create_top_customers_table(cp)
         st.divider()
@@ -238,17 +514,16 @@ def main() -> None:
         create_insights_section(cp)
 
     st.divider()
-    create_match_quality_section(matches_df)
+    create_match_quality_section(matches_df, threshold)
 
     st.divider()
     precision_note = f"{precision:.1%}" if precision is not None else "run matching engine to compute"
     st.markdown(
         f"""
-        ---
         **About this analysis:**
-        - Matching algorithm: Probabilistic record linkage with 95% confidence threshold
+        - Matching algorithm: Probabilistic record linkage with {threshold:.0%} confidence threshold
         - Precision: {precision_note} (validated against ground truth)
-        - Auto-merged: All matches with >=95% confidence
+        - Auto-merged: All matches with ≥{threshold:.0%} confidence
         """
     )
 
