@@ -89,12 +89,16 @@ streamlit run dashboard.py
 ```
 
 Opens a live Streamlit dashboard showing:
-- Summary KPIs (total records, duplicates found, unique customers, match precision)
-- Hidden customer value unlocked by unification
-- Top 10 cross-platform customers by combined lifetime value
-- Customer value distribution chart
-- VIP and cross-sell opportunity insights
-- Match confidence score distribution
+- **Summary KPIs** — total records, duplicates found, unique customers, match precision; with vs-last-run delta badges
+- **Hidden Value** — combined customer lifetime value, avg per unified customer, Shopify/Stripe revenue split
+- **Top Customers** — searchable top-10 table with show-all expander and CSV download; numeric currency columns
+- **Value Distribution** — bar chart with per-bin drill-down (click a range to see the customer list + download)
+- **Actionable Insights** — VIP retargeting and cross-sell opportunity cards
+- **Match Quality** — confidence score histogram with dynamic threshold annotation line
+
+Sidebar controls:
+- **Confidence Threshold** slider — filters all sections live (min = lowest match score in data)
+- **Customer Type** filter — All / Shopify Primary / Stripe Primary
 
 ## Project Structure
 
@@ -121,7 +125,8 @@ customer-unification-agent/
 │
 ├── auto_merge_matches.csv              # Output: high-confidence matches (383 pairs)
 ├── review_queue_matches.csv            # Output: borderline matches (9 pairs)
-└── validation_metrics.json             # Output: precision/recall metrics
+├── validation_metrics.json             # Output: precision/recall metrics
+└── dashboard_state.json                # Output: persisted KPI snapshot for delta badges
 ```
 
 ## How It Works

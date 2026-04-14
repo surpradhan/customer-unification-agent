@@ -13,6 +13,9 @@ env/
 *.csv
 data/
 
+# Dashboard runtime state
+dashboard_state.json
+
 # IDE
 .vscode/
 .idea/
